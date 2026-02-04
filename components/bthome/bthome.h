@@ -9,6 +9,9 @@
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #endif
+#ifdef USE_EVENT
+#include "esphome/components/event/event.h"
+#endif
 
 #include <array>
 
@@ -17,7 +20,6 @@
   #include <esp_timer.h>  // For esp_timer_get_time()
   #ifdef USE_BTHOME_NIMBLE
     // NimBLE stack (lighter weight, broadcast-only)
-    #include "esp_nimble_hci.h"
     #include "nimble/nimble_port.h"
     #include "nimble/nimble_port_freertos.h"
     #include "host/ble_hs.h"
@@ -52,6 +54,17 @@ static const uint8_t BTHOME_DEVICE_INFO_TRIGGER_UNENCRYPTED = 0x44;   // Trigger
 static const uint8_t BTHOME_DEVICE_INFO_TRIGGER_ENCRYPTED = 0x45;     // Trigger-based device, encrypted
 static const size_t MAX_BLE_ADVERTISEMENT_SIZE = 31;
 static const size_t MAX_DEVICE_NAME_LENGTH = 20;  // Leave room for other AD elements
+static const uint8_t BTHOME_OBJECT_ID_BUTTON_EVENT = 0x3A;
+
+// Button event types (BTHome v2 spec object ID 0x3A)
+static const uint8_t BUTTON_EVENT_NONE = 0x00;
+static const uint8_t BUTTON_EVENT_PRESS = 0x01;
+static const uint8_t BUTTON_EVENT_DOUBLE_PRESS = 0x02;
+static const uint8_t BUTTON_EVENT_TRIPLE_PRESS = 0x03;
+static const uint8_t BUTTON_EVENT_LONG_PRESS = 0x04;
+static const uint8_t BUTTON_EVENT_LONG_DOUBLE_PRESS = 0x05;
+static const uint8_t BUTTON_EVENT_LONG_TRIPLE_PRESS = 0x06;
+static const uint8_t BUTTON_EVENT_HOLD_PRESS = 0x80;
 
 #ifdef USE_SENSOR
 struct SensorMeasurement {
@@ -68,6 +81,13 @@ struct SensorMeasurement {
 struct BinarySensorMeasurement {
   binary_sensor::BinarySensor *sensor;
   uint8_t object_id;
+  bool advertise_immediately;
+};
+#endif
+
+#ifdef USE_EVENT
+struct EventMeasurement {
+  event::Event *event;
   bool advertise_immediately;
 };
 #endif
@@ -109,6 +129,9 @@ class BTHome : public Component {
 #ifdef USE_BINARY_SENSOR
   void add_binary_measurement(binary_sensor::BinarySensor *sensor, uint8_t object_id, bool advertise_immediately);
 #endif
+#ifdef USE_EVENT
+  void add_event_measurement(event::Event *event, bool advertise_immediately);
+#endif
 
 #if defined(USE_ESP32) && defined(USE_BTHOME_BLUEDROID)
   void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) override;
@@ -125,8 +148,14 @@ class BTHome : public Component {
 #ifdef USE_BINARY_SENSOR
   size_t encode_binary_measurement_(uint8_t *data, size_t max_len, uint8_t object_id, bool value);
 #endif
+#ifdef USE_EVENT
+  size_t encode_event_measurements_(uint8_t *data, size_t max_len);
+  bool map_button_event_type_(const std::string &event_type, uint8_t *event_code) const;
+  void queue_button_event_(size_t index, uint8_t event_code, bool advertise_immediately);
+#endif
   bool encrypt_payload_(const uint8_t *plaintext, size_t plaintext_len, uint8_t *ciphertext, size_t *ciphertext_len);
-  void trigger_immediate_advertising_(uint8_t measurement_index, bool is_binary);
+  enum class ImmediateType : uint8_t { NONE, SENSOR, BINARY, EVENT };
+  void trigger_immediate_advertising_(uint8_t measurement_index, ImmediateType type);
 
   // Measurements storage
 #ifdef USE_SENSOR
@@ -134,6 +163,11 @@ class BTHome : public Component {
 #endif
 #ifdef USE_BINARY_SENSOR
   StaticVector<BinarySensorMeasurement, BTHOME_MAX_BINARY_MEASUREMENTS> binary_measurements_;
+#endif
+#ifdef USE_EVENT
+  StaticVector<EventMeasurement, BTHOME_MAX_EVENT_MEASUREMENTS> event_measurements_;
+  std::array<uint8_t, BTHOME_MAX_EVENT_MEASUREMENTS> pending_event_types_{};
+  bool pending_events_{false};
 #endif
 
   // Common settings
@@ -177,7 +211,7 @@ class BTHome : public Component {
   // Immediate advertising
   bool immediate_advertising_pending_{false};
   uint8_t immediate_adv_measurement_index_{0};
-  bool immediate_adv_is_binary_{false};
+  ImmediateType immediate_adv_type_{ImmediateType::NONE};
 
   // Platform-specific members
 #ifdef USE_ESP32

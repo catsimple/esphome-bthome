@@ -11,7 +11,7 @@ Supports ESP32 (ESP-IDF) and nRF52 (Zephyr) platforms.
 """
 
 import esphome.codegen as cg
-from esphome.components import binary_sensor, sensor
+from esphome.components import binary_sensor, event, sensor
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_BINARY_SENSORS,
@@ -47,6 +47,7 @@ CONF_ADVERTISE_IMMEDIATELY = "advertise_immediately"
 CONF_TRIGGER_BASED = "trigger_based"
 CONF_RETRANSMIT_COUNT = "retransmit_count"
 CONF_RETRANSMIT_INTERVAL = "retransmit_interval"
+CONF_EVENTS = "events"
 
 # =============================================================================
 # BTHome v2 Sensor Object IDs
@@ -156,6 +157,21 @@ BINARY_SENSOR_TYPES = {
     "window": 0x2D,             # closed/open
 }
 
+# =============================================================================
+# BTHome v2 Button Event Types (object ID 0x3A)
+# See: https://bthome.io/format/
+# =============================================================================
+BUTTON_EVENT_TYPES = {
+    "none": 0x00,
+    "press": 0x01,
+    "double_press": 0x02,
+    "triple_press": 0x03,
+    "long_press": 0x04,
+    "long_double_press": 0x05,
+    "long_triple_press": 0x06,
+    "hold_press": 0x80,
+}
+
 # TX Power levels for ESP32 (maps dBm to esp_power_level_t enum value)
 ESP32_TX_POWER_LEVELS = {
     -12: 0, -9: 1, -6: 2, -3: 3, 0: 4, 3: 5, 6: 6, 9: 7,
@@ -252,6 +268,14 @@ CONFIG_SCHEMA = cv.All(
                     }
                 )
             ),
+            cv.Optional(CONF_EVENTS): cv.ensure_list(
+                cv.Schema(
+                    {
+                        cv.Required(CONF_ID): cv.use_id(event.Event),
+                        cv.Optional(CONF_ADVERTISE_IMMEDIATELY, default=True): cv.boolean,
+                    }
+                )
+            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     validate_config,
@@ -264,11 +288,13 @@ async def to_code(config):
     # Calculate sizes for StaticVector compile-time allocation
     num_sensors = max(1, len(config.get(CONF_SENSORS, [])))
     num_binary_sensors = max(1, len(config.get(CONF_BINARY_SENSORS, [])))
-    max_packets = max(1, num_sensors + num_binary_sensors)
+    num_events = max(1, len(config.get(CONF_EVENTS, [])))
+    max_packets = max(1, num_sensors + num_binary_sensors + num_events)
 
     # Add defines for compile-time sizes
     cg.add_define("BTHOME_MAX_MEASUREMENTS", num_sensors)
     cg.add_define("BTHOME_MAX_BINARY_MEASUREMENTS", num_binary_sensors)
+    cg.add_define("BTHOME_MAX_EVENT_MEASUREMENTS", num_events)
     cg.add_define("BTHOME_MAX_ADV_PACKETS", max_packets)
 
     var = cg.new_Pvariable(config[CONF_ID])
@@ -314,6 +340,13 @@ async def to_code(config):
             sens = await cg.get_variable(measurement[CONF_ID])
             advertise_immediately = measurement[CONF_ADVERTISE_IMMEDIATELY]
             cg.add(var.add_binary_measurement(sens, object_id, advertise_immediately))
+
+    # Add event measurements (button events)
+    if CONF_EVENTS in config:
+        for measurement in config[CONF_EVENTS]:
+            ev = await cg.get_variable(measurement[CONF_ID])
+            advertise_immediately = measurement[CONF_ADVERTISE_IMMEDIATELY]
+            cg.add(var.add_event_measurement(ev, advertise_immediately))
 
     # Platform-specific setup
     if CORE.is_esp32:
